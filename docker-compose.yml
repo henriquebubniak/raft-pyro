@@ -1,0 +1,74 @@
+x-raft-base: &raft-base
+  build: .
+  image: raft-app
+  networks:
+    - raft-net
+
+services:
+  ns:
+    <<: *raft-base
+    command: python -m Pyro5.nameserver -n 0.0.0.0
+    hostname: ns
+
+  raft-0:
+    <<: *raft-base
+    command: python main.py
+    hostname: raft-0
+    environment:
+      NODE_ID: "0"
+      PYRO_NS_HOST: ns
+    depends_on: [ns]
+
+  raft-1:
+    <<: *raft-base
+    command: python main.py
+    hostname: raft-1
+    environment:
+      NODE_ID: "1"
+      PYRO_NS_HOST: ns
+    depends_on: [ns]
+
+  raft-2:
+    <<: *raft-base
+    command: python main.py
+    hostname: raft-2
+    environment:
+      NODE_ID: "2"
+      PYRO_NS_HOST: ns
+    depends_on: [ns]
+
+  raft-3:
+    <<: *raft-base
+    command: python main.py
+    hostname: raft-3
+    environment:
+      NODE_ID: "3"
+      PYRO_NS_HOST: ns
+    depends_on: [ns]
+
+  raft-4:
+    <<: *raft-base
+    command: python main.py
+    hostname: raft-4
+    environment:
+      NODE_ID: "4"
+      PYRO_NS_HOST: ns
+    depends_on: [ns]
+
+  viz:
+    <<: *raft-base
+    command: python viz.py
+    environment:
+      PYRO_NS_HOST: ns
+    stdin_open: true
+    tty: true
+    profiles: [tools]
+    depends_on:
+      - raft-0
+      - raft-1
+      - raft-2
+      - raft-3
+      - raft-4
+
+networks:
+  raft-net:
