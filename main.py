@@ -421,7 +421,7 @@ class Server:
                         EVENTS.append(self.id, "candidate timeout -> FOLLOWER")
                         self.state = Follower()
                 case Leader(last_sent_heartbeat=lsh, heartbeat_frequency=hf):
-                    if datetime.now() - lsh < hf:
+                    if datetime.now() - lsh < hf * scale:
                         return
                     args_map = {}
                     on_result = {}
@@ -448,6 +448,7 @@ class Server:
                         on_result[p] = self.append_entries_callback_factory(p)
                     if args_map:
                         broadcast("append_entries", args_map, on_result=on_result)
+                        self.state.last_sent_heartbeat = datetime.now()
 
 
 def broadcast(method_name, args_map: dict, on_result: dict | None = None):
