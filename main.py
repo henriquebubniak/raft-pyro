@@ -44,13 +44,13 @@ def _peer_id(peer) -> int:
 
 class Follower:
     def __init__(self):
-        self.timeout_ms = randint(100, 300)
+        self.timeout_ms = randint(1000, 3000)
         self.last_heartbeat = datetime.now()
 
 
 class Candidate:
     def __init__(self, votes):
-        self.timeout_ms = randint(100, 300)
+        self.timeout_ms = randint(1000, 3000)
         self.election_start = datetime.now()
         self.votes = votes
 
@@ -74,6 +74,8 @@ Pyro5.api.register_dict_to_class(
 class Leader:
     def __init__(self, peers, log_size):
         self.next_index: dict = {p: log_size for p in peers}
+        self.heartbeat_frequency = timedelta(milliseconds=100) # every 10ms
+        self.last_sent_heartbeat = datetime.now()
 
 
 State = Follower | Candidate | Leader
@@ -124,9 +126,7 @@ class Server:
                 return (self.term, False, len(self.logs))
             was_leader_or_candidate = not isinstance(self.state, Follower)
             if was_leader_or_candidate:
-                EVENTS.append(
-                    self.id, f"step down on ae from n{leader_id} t{term}"
-                )
+                EVENTS.append(self.id, f"step down on ae from n{leader_id} t{term}")
                 self.state = Follower()
             self.state.last_heartbeat = datetime.now()
             if self.term < term:
@@ -140,10 +140,7 @@ class Server:
                         f"reject ae from n{leader_id}: gap (have {len(self.logs)}, need prev={prev_log_index})",
                     )
                 return (self.term, False, len(self.logs))
-            if (
-                prev_log_index >= 0
-                and self.logs[prev_log_index].term != prev_log_term
-            ):
+            if prev_log_index >= 0 and self.logs[prev_log_index].term != prev_log_term:
                 EVENTS.append(
                     self.id,
                     f"reject ae from n{leader_id}: term mismatch at idx {prev_log_index}",
@@ -230,9 +227,7 @@ class Server:
                 extra = {
                     "timeout_ms": self.state.timeout_ms,
                     "ms_since_heartbeat": int(
-                        (now - self.state.last_heartbeat).total_seconds()
-                        * 1000
-                        / scale
+                        (now - self.state.last_heartbeat).total_seconds() * 1000 / scale
                     ),
                 }
             elif isinstance(self.state, Candidate):
@@ -241,9 +236,7 @@ class Server:
                     "timeout_ms": self.state.timeout_ms,
                     "votes": self.state.votes,
                     "ms_since_election": int(
-                        (now - self.state.election_start).total_seconds()
-                        * 1000
-                        / scale
+                        (now - self.state.election_start).total_seconds() * 1000 / scale
                     ),
                 }
             else:
@@ -312,91 +305,97 @@ class Server:
                 EVENTS.append(self.id, "*** RESTORED (sim) ***")
 
     def request_votes(self):
-        def make_callback(peer):
-            pid = _peer_id(peer)
-
-            def callback(response):
-                with self.lock:
-                    term, granted = response
-                    if term < self.term:
-                        return
-                    if term > self.term:
-                        EVENTS.append(
-                            self.id,
-                            f"step down: n{pid} replied with higher term {term}",
-                        )
-                        self.state = Follower()
-                        self.term = term
-                        self.voted = False
-                        return
-                    if granted and isinstance(self.state, Candidate):
-                        self.state.votes += 1
-                        threshold = len(self.peers) // 2 + 1
-                        EVENTS.append(
-                            self.id,
-                            f"vote received from n{pid}: {self.state.votes}/{threshold}",
-                        )
-                    elif not granted:
-                        EVENTS.append(self.id, f"vote denied by n{pid}")
-
-            return callback
-
         reachable = [p for p in self.peers if self._can_reach(_peer_id(p))]
         if not reachable:
             return
         peer_ids = ",".join(f"n{_peer_id(p)}" for p in reachable)
         EVENTS.append(self.id, f"-> request_vote to {peer_ids} t{self.term}")
-        broadcast(
-            "request_vote",
-            {
-                p: [
-                    self.term,
+
+        term = self.term
+        log_size = len(self.logs)
+        last_log_term = self.logs[-1].term if len(self.logs) > 0 else -1
+
+        for peer in reachable:
+            pid = _peer_id(peer)
+            try:
+                peer._pyroClaimOwnership()
+                response = peer.request_vote(term, self.id, log_size, last_log_term)
+            except Exception:
+                continue
+            resp_term, granted = response
+            if resp_term < self.term:
+                continue
+            if resp_term > self.term:
+                EVENTS.append(
                     self.id,
-                    len(self.logs),
-                    self.logs[-1].term if len(self.logs) > 0 else -1,
-                ]
-                for p in reachable
-            },
-            on_result={p: make_callback(p) for p in reachable},
-        )
+                    f"step down: n{pid} replied with higher term {resp_term}",
+                )
+                self.state = Follower()
+                self.term = resp_term
+                self.voted = False
+                return
+            if granted and isinstance(self.state, Candidate):
+                self.state.votes += 1
+                threshold = len(self.peers) // 2 + 1
+                EVENTS.append(
+                    self.id,
+                    f"vote received from n{pid}: {self.state.votes}/{threshold}",
+                )
+            elif not granted:
+                EVENTS.append(self.id, f"vote denied by n{pid}")
 
-    def append_entries_callback_factory(self, peer):
-        pid = _peer_id(peer)
+    def send_append_entries(self):
+        if not isinstance(self.state, Leader):
+            return
+        for peer in self.peers:
+            pid = _peer_id(peer)
+            if not self._can_reach(pid):
+                continue
+            ni = self.state.next_index[peer]
+            entries = self.logs[ni:]
+            prev_log_index = ni - 1
+            prev_log_term = self.logs[ni - 1].term if ni >= 1 else 0
+            if entries:
+                EVENTS.append(
+                    self.id,
+                    f"-> ae to n{pid} prev=({prev_log_index},t{prev_log_term}) entries={len(entries)}",
+                )
+            try:
+                peer._pyroClaimOwnership()
+                response = peer.append_entries(
+                    self.id, self.term, prev_log_index, prev_log_term, entries
+                )
+            except Exception:
+                continue
 
-        def callback(response):
-            with self.lock:
-                term, granted, peer_logs_len = response
-                if term < self.term:
-                    return
-                if term > self.term:
+            resp_term, granted, peer_logs_len = response
+            if resp_term < self.term:
+                continue
+            if resp_term > self.term:
+                EVENTS.append(
+                    self.id,
+                    f"step down: n{pid} replied with higher term {resp_term}",
+                )
+                self.state = Follower()
+                self.term = resp_term
+                self.voted = False
+                return
+            if not isinstance(self.state, Leader):
+                return
+            prev = self.state.next_index[peer]
+            if granted:
+                if peer_logs_len != prev:
                     EVENTS.append(
                         self.id,
-                        f"step down: n{pid} replied with higher term {term}",
+                        f"ack from n{pid}: next_index {prev} -> {peer_logs_len}",
                     )
-                    self.state = Follower()
-                    self.term = term
-                    self.voted = False
-                    return
-
-                if not isinstance(self.state, Leader):
-                    return
-
-                prev = self.state.next_index[peer]
-                if granted:
-                    if peer_logs_len != prev:
-                        EVENTS.append(
-                            self.id,
-                            f"ack from n{pid}: next_index {prev} -> {peer_logs_len}",
-                        )
-                    self.state.next_index[peer] = peer_logs_len
-                else:
-                    self.state.next_index[peer] -= 1
-                    EVENTS.append(
-                        self.id,
-                        f"nack from n{pid}: backing off next_index -> {self.state.next_index[peer]}",
-                    )
-
-        return callback
+                self.state.next_index[peer] = peer_logs_len
+            else:
+                self.state.next_index[peer] -= 1
+                EVENTS.append(
+                    self.id,
+                    f"nack from n{pid}: backing off next_index -> {self.state.next_index[peer]}",
+                )
 
     def loop(self):
         with self.lock:
@@ -414,9 +413,7 @@ class Server:
                         self.request_votes()
                 case Candidate(votes=v, election_start=es, timeout_ms=t):
                     if v > len(self.peers) / 2:
-                        EVENTS.append(
-                            self.id, f"WON election -> LEADER t{self.term}"
-                        )
+                        EVENTS.append(self.id, f"WON election -> LEADER t{self.term}")
                         self.state = Leader(self.peers, len(self.logs))
                         try:
                             ns = Pyro5.api.locate_ns()
@@ -429,48 +426,11 @@ class Server:
                     elif datetime.now() - es > timedelta(milliseconds=t * scale):
                         EVENTS.append(self.id, "candidate timeout -> FOLLOWER")
                         self.state = Follower()
-                case Leader():
-                    args_map = {}
-                    on_result = {}
-                    for p in self.peers:
-                        pid = _peer_id(p)
-                        if not self._can_reach(pid):
-                            continue
-                        ni = self.state.next_index[p]
-                        entries = self.logs[ni:]
-                        prev_log_index = ni - 1
-                        prev_log_term = (
-                            self.logs[ni - 1].term if ni >= 1 else 0
-                        )
-                        if entries:
-                            EVENTS.append(
-                                self.id,
-                                f"-> ae to n{pid} prev=({prev_log_index},t{prev_log_term}) entries={len(entries)}",
-                            )
-                        args_map[p] = [
-                            self.id,
-                            self.term,
-                            prev_log_index,
-                            prev_log_term,
-                            entries,
-                        ]
-                        on_result[p] = self.append_entries_callback_factory(p)
-                    if args_map:
-                        broadcast("append_entries", args_map, on_result=on_result)
-
-
-def broadcast(method_name, args_map: dict, on_result: dict | None = None):
-    def call(peer, args):
-        peer._pyroClaimOwnership()
-        try:
-            result = getattr(peer, method_name)(*args)
-        except Exception:
-            return
-        if on_result is not None:
-            on_result[peer](result)
-
-    for peer, args in args_map.items():
-        threading.Thread(target=call, args=(peer, args), daemon=True).start()
+                case Leader(last_sent_heartbeat=lsh, heartbeat_frequency=hf):
+                    if datetime.now() - lsh < hf:
+                        return
+                    self.state.last_sent_heartbeat = datetime.now()
+                    self.send_append_entries()
 
 
 def _own_uri() -> str:
@@ -495,15 +455,15 @@ def main():
     server = Server(NODE_ID)
     daemon.register(server, objectId=f"server.{NODE_ID}")
 
-    threading.Thread(
-        target=_register_in_ns, args=(_own_uri(),), daemon=True
-    ).start()
+    threading.Thread(target=_register_in_ns, args=(_own_uri(),), daemon=True).start()
 
     for i in range(CLUSTER_SIZE):
         if i == NODE_ID:
             continue
         peer_uri = f"PYRO:server.{i}@{PEER_HOST_PATTERN.format(i=i)}:{PYRO_PORT}"
-        server.peers.append(Pyro5.api.Proxy(peer_uri))
+        peer = Pyro5.api.Proxy(peer_uri)
+        peer._pyroTimeout = 0.5
+        server.peers.append(peer)
 
     def tick():
         while True:
