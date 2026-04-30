@@ -2,7 +2,7 @@ import collections
 import os
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from random import randint
 
 import Pyro5
@@ -45,13 +45,13 @@ def _peer_id(peer) -> int:
 class Follower:
     def __init__(self):
         self.timeout_ms = randint(1000, 3000)
-        self.last_heartbeat = datetime.now()
+        self.last_heartbeat = time.monotonic()
 
 
 class Candidate:
     def __init__(self, votes):
         self.timeout_ms = randint(1000, 3000)
-        self.election_start = datetime.now()
+        self.election_start = time.monotonic()
         self.votes = votes
 
 
@@ -74,8 +74,8 @@ Pyro5.api.register_dict_to_class(
 class Leader:
     def __init__(self, peers, log_size):
         self.next_index: dict = {p: log_size for p in peers}
-        self.heartbeat_frequency = timedelta(milliseconds=100) # every 10ms
-        self.last_sent_heartbeat = datetime.now()
+        self.heartbeat_frequency = 0.1
+        self.last_sent_heartbeat = time.monotonic()
 
 
 State = Follower | Candidate | Leader
@@ -128,7 +128,7 @@ class Server:
             if was_leader_or_candidate:
                 EVENTS.append(self.id, f"step down on ae from n{leader_id} t{term}")
                 self.state = Follower()
-            self.state.last_heartbeat = datetime.now()
+            self.state.last_heartbeat = time.monotonic()
             if self.term < term:
                 self.term = term
                 self.voted = False
@@ -194,7 +194,7 @@ class Server:
                 last_log_term == my_last_log_term and log_size >= my_log_size
             )
             if log_ok:
-                self.state.last_heartbeat = datetime.now()
+                self.state.last_heartbeat = time.monotonic()
                 self.voted = True
                 EVENTS.append(self.id, f"GRANT vote n{candidate_id} t{term}")
                 return (self.term, True)
@@ -220,14 +220,14 @@ class Server:
     @Pyro5.api.expose
     def get_state(self):
         with self.lock:
-            now = datetime.now()
+            now = time.monotonic()
             scale = self.time_scale
             if isinstance(self.state, Follower):
                 role = "follower"
                 extra = {
                     "timeout_ms": self.state.timeout_ms,
                     "ms_since_heartbeat": int(
-                        (now - self.state.last_heartbeat).total_seconds() * 1000 / scale
+                        (now - self.state.last_heartbeat) * 1000 / scale
                     ),
                 }
             elif isinstance(self.state, Candidate):
@@ -236,7 +236,7 @@ class Server:
                     "timeout_ms": self.state.timeout_ms,
                     "votes": self.state.votes,
                     "ms_since_election": int(
-                        (now - self.state.election_start).total_seconds() * 1000 / scale
+                        (now - self.state.election_start) * 1000 / scale
                     ),
                 }
             else:
@@ -398,7 +398,7 @@ class Server:
             scale = self.time_scale
             match self.state:
                 case Follower(last_heartbeat=lh, timeout_ms=t):
-                    if datetime.now() - lh > timedelta(milliseconds=t * scale):
+                    if time.monotonic() - lh > (t * scale) / 1000.0:
                         self.state = Candidate(votes=1)
                         self.term += 1
                         EVENTS.append(
@@ -417,11 +417,11 @@ class Server:
                             )
                         except Exception:
                             pass
-                    elif datetime.now() - es > timedelta(milliseconds=t * scale):
+                    elif time.monotonic() - es > (t * scale) / 1000.0:
                         EVENTS.append(self.id, "candidate timeout -> FOLLOWER")
                         self.state = Follower()
                 case Leader(last_sent_heartbeat=lsh, heartbeat_frequency=hf):
-                    if datetime.now() - lsh < hf * scale:
+                    if time.monotonic() - lsh < hf * scale:
                         return
                     args_map = {}
                     on_result = {}
@@ -448,7 +448,7 @@ class Server:
                         on_result[p] = self.append_entries_callback_factory(p)
                     if args_map:
                         broadcast("append_entries", args_map, on_result=on_result)
-                        self.state.last_sent_heartbeat = datetime.now()
+                        self.state.last_sent_heartbeat = time.monotonic()
 
 
 def broadcast(method_name, args_map: dict, on_result: dict | None = None):
