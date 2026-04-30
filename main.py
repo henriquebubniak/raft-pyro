@@ -1,86 +1,43 @@
-import typing
+import sys
+import threading
 import Pyro5.api
 import Pyro5
-from datetime import datetime, timedelta
-from random import randint
-
-PYROPORT = 9090
+from server import RaftNode
 
 
-class Follower:
-    def __init__(self):
-        self.timeout_ms = randint(100, 300)
-        self.last_heartbeat = datetime.now()
-        self.voted = []
+FOLLOWER = "FOLLOWER"
+CANDIDATE = "CANDIDATE"
+LEADER = "LEADER"
 
-
-class Candidate:
-    def __init__(self, votes):
-        self.timeout_ms = randint(100, 300)
-        self.election_start = datetime.now()
-        self.votes = votes
-
-    def request_votes(self):
-        pass
-
-
-class Leader:
-    pass
-
-
-State = Follower | Candidate | Leader
-
-
-class Server:
-    def __init__(self, id):
-        self.id = id
-        self.state: State = Follower()
-        self.term = 0
-
-    def heartbeat(self):
-        if isinstance(self.state, Follower):
-            self.state.last_heartbeat = datetime.now()
-
-    def request_votes(self):
-        if isinstance(self.state, Candidate):
-            for peer in peers:
-                self.state.votes += peer.request_vote(self.term + 1)
-
-    def request_vote(self, term) -> typing.Literal[1, 0]:
-        if not isinstance(self.state, Follower):
-            return 0
-
-        self.state.last_heartbeat = datetime.now()
-
-        if term in self.state.voted:
-            self.state.voted.append(term)
-            return 1
-
-        return 0
-
-    def loop(self):
-        match type(self.state):
-            case Follower(last_heartbeat=lh, timeout_ms=t):
-                if datetime.now() - lh > timedelta(milliseconds=t):
-                    self.state = Candidate(votes=1)
-                    self.state.request_votes()
-            case Candidate(votes=v, election_start=es, timeout_ms=t):
-                if v > len(peers) / 2:
-                    self.state = Leader()
-                if datetime.now() - es > timedelta(milliseconds=t):
-                    self.state = Follower()
-            case Leader():
-                pass
-
-
-peers: list[Server] = []
-
+NODE_IDS = [1, 2, 3, 4]
+HEARTBEAT_INTERVAL = 0.5
+ELECTION_TIMEOUT_MIN = 1.5
+ELECTION_TIMEOUT_MAX = 3.0
+RPC_TIMEOUT = 0.5
 
 def main():
-    id = 1
-    daemon = Pyro5.api.Daemon(port=PYROPORT)
-    uri = daemon.register(Server(id), objectId=f"server.{id}")
+    if len(sys.argv) != 2:
+        print("Usage: python server.py <node_id>  (1..4)")
+        sys.exit(1)
+    node_id = int(sys.argv[1])
+    if node_id not in NODE_IDS:
+        print(f"node_id must be one of {NODE_IDS}")
+        sys.exit(1)
+
+    daemon = Pyro5.api.Daemon()
+    node = RaftNode(node_id)
+    uri = daemon.register(node)
+    node.uri = uri
+
+    ns = Pyro5.api.locate_ns()
+    ns.register(f"raft.node{node_id}", uri)
+
+    threading.Thread(target=node.run, daemon=True).start()
+
+    print(f"[node{node_id}] ready at {uri}")
+    daemon.requestLoop()
 
 
 if __name__ == "__main__":
     main()
+
