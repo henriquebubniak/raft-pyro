@@ -206,7 +206,11 @@ class NodePanel(Static):
             tail = snap["logs"][-8:]
             offset = snap["log_size"] - len(tail)
             for i, e in enumerate(tail):
-                lines.append(f"  [{offset + i}] {e['value']!r} @t{e['term']}")
+                entry = f"[{offset + i}] {e['value']!r} @t{e['term']}"
+                if e.get("commited"):
+                    lines.append(f"  [green]{entry}[/]")
+                else:
+                    lines.append(f"  {entry}")
             if snap["log_size"] > 8:
                 lines.append(f"  [dim]...({snap['log_size'] - 8} more above)[/]")
         else:

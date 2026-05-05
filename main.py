@@ -74,6 +74,7 @@ Pyro5.api.register_dict_to_class(
 class Leader:
     def __init__(self, peers, log_size):
         self.next_index: dict = {p: log_size for p in peers}
+        self.match_index: dict = {p: 0 for p in peers}
         self.heartbeat_frequency = 0.1
         self.last_sent_heartbeat = time.monotonic()
 
@@ -95,6 +96,7 @@ class Server:
         self.crashed: bool = False
         self.partition_id: int = 0
         self.partition_map: dict[int, int] = {}
+        self.commit_id: int = -1
 
     def _peer_partition(self, peer_id: int) -> int:
         return self.partition_map.get(peer_id, 0)
@@ -109,6 +111,7 @@ class Server:
         term: int,
         prev_log_index: int,
         prev_log_term: int,
+        commit_id: int,
         entries: list,
     ):
         with self.lock:
@@ -147,6 +150,7 @@ class Server:
                 )
                 return (self.term, False, len(self.logs))
             self.logs = self.logs[: prev_log_index + 1] + entries
+            self.commit_id = max(self.commit_id, commit_id)
             if entries:
                 EVENTS.append(
                     self.id,
@@ -253,7 +257,7 @@ class Server:
                 "voted": self.voted,
                 "leader_id": self.leader_id,
                 "log_size": len(self.logs),
-                "logs": [{"value": e.value, "term": e.term} for e in self.logs],
+                "logs": [{"value": e.value, "term": e.term, "commited": self.commit_id >= i} for i, e in enumerate(self.logs)],
                 "time_scale": self.time_scale,
                 "crashed": self.crashed,
                 "partition_id": self.partition_id,
@@ -382,6 +386,16 @@ class Server:
                             f"ack from n{pid}: next_index {prev} -> {peer_logs_len}",
                         )
                     self.state.next_index[peer] = peer_logs_len
+                    self.state.match_index[peer] = peer_logs_len-1
+                    for i in range(self.commit_id + 1, len(self.logs)):
+                        if self.logs[i].term != self.term:
+                            continue
+                        amount = sum([1 if self.state.match_index[p] >= i else 0 for p in self.peers])
+                        if amount + 1 > (len(self.peers) + 1) / 2:
+                            self.commit_id = i
+                        else:
+                            break
+
                 else:
                     self.state.next_index[peer] -= 1
                     EVENTS.append(
@@ -443,6 +457,7 @@ class Server:
                             self.term,
                             prev_log_index,
                             prev_log_term,
+                            self.commit_id,
                             entries,
                         ]
                         on_result[p] = self.append_entries_callback_factory(p)
