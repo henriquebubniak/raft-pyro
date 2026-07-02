@@ -1,0 +1,134 @@
+syntax = "proto3";
+
+package server;
+
+// -- service definitions -- //
+
+// Internal Raft protocol + demo tooling (viz). External clients are
+// built only against client.proto and never see this contract.
+service Server {
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+
+  rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse);
+
+  rpc GetState(Empty) returns (StateResponse);
+
+  rpc GetEvents(GetEventsRequest) returns (stream Event);
+
+  rpc SetTimeScale(SetTimeScaleRequest) returns (SetTimeScaleResponse);
+
+  rpc SetPartition(SetPartitionRequest) returns (SetPartitionResponse);
+
+  rpc SetPartitionMap(SetPartitionAllRequest) returns (SetPartitionAllResponse);
+
+  rpc Kill(KillRequest) returns (KillResponse);
+
+  rpc Restore(KillRequest) returns (KillResponse);
+
+  rpc GetLeader(Empty) returns (LeaderResponse);
+}
+
+message Entry {
+  string value = 1;
+  int32 term = 2;
+}
+
+message SetPartitionRequest {
+  int32 partition_id = 1;
+}
+
+message SetPartitionResponse {
+  int32 partition_id = 1;
+}
+
+message SetPartitionAllRequest {
+  map<int32, int32> partition_map = 1;
+}
+
+message SetPartitionAllResponse {
+  map<int32, int32> partition_map = 1;
+}
+
+message KillRequest {}
+
+message KillResponse {}
+
+message LeaderResponse {
+  int32 leader_id = 1;
+}
+
+message SetTimeScaleRequest {
+  float scale = 1;
+}
+
+message SetTimeScaleResponse {
+  float scale = 1;
+}
+
+message AppendEntriesRequest {
+  int32 term = 1;
+  int32 leader_id = 2;
+  int32 prev_log_index = 3;
+  int32 prev_log_term = 4;
+  repeated Entry entries = 5;
+  int32 leader_commit = 6;
+}
+
+message AppendEntriesResponse {
+  int32 term = 1;
+  bool success = 2;
+  int32 last_log_index = 3;
+}
+
+message GetEventsRequest {
+  int32 since_id = 1;
+}
+
+message Empty {}
+
+message LogView {
+  string value = 1;
+  int32 term = 2;
+  bool commited = 3;
+}
+
+message StateResponse {
+  int32 id = 1;
+  string role = 2;
+  int32 term = 3;
+  bool voted = 4;
+  int32 leader_id = 5;
+  int32 log_size = 6;
+  double time_scale = 7;
+  bool crashed = 8;
+  int32 partition_id = 9;
+  repeated LogView logs = 10;
+  // follower-only
+  int32 timeout_ms = 11;
+  int32 ms_since_heartbeat = 12;
+  // candidate-only
+  int32 votes = 13;
+  int32 ms_since_election = 14;
+  // leader-only
+  map<int32, int32> next_index = 15;
+}
+
+message Event {
+  int32 id = 1;
+  string ts = 2;
+  int32 node_id = 3;
+  string msg = 4;
+}
+
+message RequestVoteRequest {
+  int32 term = 1;
+  int32 candidate_id = 2;
+  int32 last_log_index = 3;
+  int32 last_log_term = 4;
+}
+
+message RequestVoteResponse {
+  int32 term = 1;
+  bool vote_granted = 2;
+}
+

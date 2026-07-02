@@ -1,0 +1,87 @@
+x-raft-base: &raft-base
+  build: .
+  image: raft-app
+  networks:
+    - raft-net
+  environment: &raft-env
+    CLUSTER_SIZE: "4"
+    GRPC_PORT: "50051"
+    PEER_HOST_PATTERN: "raft-{i}"
+    DATA_DIR: /data
+
+services:
+  raft-0:
+    <<: *raft-base
+    command: python main.py
+    hostname: raft-0
+    environment:
+      <<: *raft-env
+      NODE_ID: "0"
+    volumes:
+      - raft-data-0:/data
+
+  raft-1:
+    <<: *raft-base
+    command: python main.py
+    hostname: raft-1
+    environment:
+      <<: *raft-env
+      NODE_ID: "1"
+    volumes:
+      - raft-data-1:/data
+
+  raft-2:
+    <<: *raft-base
+    command: python main.py
+    hostname: raft-2
+    environment:
+      <<: *raft-env
+      NODE_ID: "2"
+    volumes:
+      - raft-data-2:/data
+
+  raft-3:
+    <<: *raft-base
+    command: python main.py
+    hostname: raft-3
+    environment:
+      <<: *raft-env
+      NODE_ID: "3"
+    volumes:
+      - raft-data-3:/data
+
+  # cliente Go (interoperabilidade): so publica e consome, nunca usa RPCs internos
+  # uso: docker compose run --rm client publish <valor>...
+  #      docker compose run --rm client read [no]
+  client:
+    build:
+      context: .
+      dockerfile: client-go/Dockerfile
+    image: raft-client-go
+    networks:
+      - raft-net
+    profiles: [tools]
+
+  # painel de visualizacao (TUI): docker compose --profile tools run --rm viz
+  viz:
+    <<: *raft-base
+    command: python viz.py
+    environment: *raft-env
+    stdin_open: true
+    tty: true
+    profiles: [tools]
+    depends_on:
+      - raft-0
+      - raft-1
+      - raft-2
+      - raft-3
+
+networks:
+  raft-net:
+
+# estado persistido de cada no (docker compose down -v para zerar)
+volumes:
+  raft-data-0:
+  raft-data-1:
+  raft-data-2:
+  raft-data-3:

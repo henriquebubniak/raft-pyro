@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+// Application-facing contract: this is the ONLY .proto the external
+// client is built against, so it cannot even generate stubs for the
+// internal Raft protocol (AppendEntries, RequestVote, ...).
+package client;
+
+option go_package = "raftclient/pb";
+
+service ClientAPI {
+  // Publish a value to the cluster. Only returns success after the
+  // entry is committed by quorum. A non-leader answers success=false
+  // with leader_id so the client can redirect itself.
+  rpc Publish(PublishRequest) returns (PublishResponse);
+
+  // Consume the committed entries. Served by both the leader and the
+  // replicas; uncommitted entries are never returned.
+  rpc Consume(ConsumeRequest) returns (ConsumeResponse);
+}
+
+message PublishRequest {
+  string value = 1;
+}
+
+message PublishResponse {
+  bool success = 1;
+  int32 leader_id = 2;
+}
+
+message ConsumeRequest {}
+
+message ConsumeResponse {
+  repeated ConsumedEntry entries = 1;
+  int32 leader_id = 2;
+}
+
+message ConsumedEntry {
+  string value = 1;
+  int32 term = 2;
+}

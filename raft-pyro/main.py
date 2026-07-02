@@ -7,7 +7,6 @@ from random import randint
 
 import Pyro5
 import Pyro5.api
-import Pyro5.errors
 
 NODE_ID = int(os.environ["NODE_ID"]) if "NODE_ID" in os.environ else 0
 CLUSTER_SIZE = int(os.environ.get("CLUSTER_SIZE", "5"))
@@ -44,13 +43,13 @@ def _peer_id(peer) -> int:
 
 class Follower:
     def __init__(self):
-        self.timeout_ms = randint(1000, 3000)
+        self.timeout_ms = randint(150, 300)
         self.last_heartbeat = time.monotonic()
 
 
 class Candidate:
     def __init__(self, votes):
-        self.timeout_ms = randint(1000, 3000)
+        self.timeout_ms = randint(150, 300)
         self.election_start = time.monotonic()
         self.votes = votes
 
@@ -136,6 +135,7 @@ class Server:
                 self.term = term
                 self.voted = False
             self.leader_id = leader_id
+            
             if prev_log_index >= len(self.logs):
                 if entries:
                     EVENTS.append(
@@ -315,8 +315,6 @@ class Server:
             def callback(response):
                 with self.lock:
                     term, granted = response
-                    if term < self.term:
-                        return
                     if term > self.term:
                         EVENTS.append(
                             self.id,

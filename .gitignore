@@ -1,0 +1,17 @@
+# ambientes locais
+pyrovenv/
+*venv/
+
+# stubs gerados pelo protoc (os Dockerfiles regeneram no build)
+*_pb2.py
+*_pb2_grpc.py
+
+# bytecode / caches
+__pycache__/
+*.pyc
+
+# estado persistido de execucoes locais (fora do docker)
+raft-grpc/data/
+
+# clone da biblioteca grpc (nao faz parte da entrega)
+grpc/
